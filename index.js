@@ -11,6 +11,7 @@ const debug = require("debug")("MyQHost"),
 const TOPIC_ROOT = process.env.TOPIC_ROOT || "myq",
   MQTT_HOST = process.env.MQTT_HOST;
 
+console.log("EMAIL", process.env.MYQ_EMAIL, process.env.MYQ_PASSWORD);
 class MyQHost extends HostBase {
   constructor(device) {
     super(MQTT_HOST, TOPIC_ROOT + "/" + device.name);
