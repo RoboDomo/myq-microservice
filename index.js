@@ -6,19 +6,36 @@ const POLL_TIME = 2 * 1000;
 const debug = require("debug")("MyQHost"),
   console = require("console"),
   HostBase = require("microservice-core/HostBase"),
-  MyQ = require("myq-api");
+  // myq-api not working due to no more v5 api
+  //  MyQ = require("myq-api");
+  { myQApi } = require("@koush/myq"),
+  MyQ = myQApi;
 
 const TOPIC_ROOT = process.env.TOPIC_ROOT || "myq",
   MQTT_HOST = process.env.MQTT_HOST;
 
-console.log("EMAIL", process.env.MYQ_EMAIL, process.env.MYQ_PASSWORD);
+const { MYQ_EMAIL, MYQ_PASSWORD } = process.env;
+
+const logger_debug = () => {
+};
+
+const logger = {
+  info: () => {
+  },
+
+  log: () => {
+  },
+  debug: () => {
+  },
+};
+
 class MyQHost extends HostBase {
   constructor(device) {
     super(MQTT_HOST, TOPIC_ROOT + "/" + device.name);
     this.device = device;
+    this.serial_number = device.serial_number;
     this.name = device.name;
     this.state = device.state;
-    this.serialNumber = device.serial_number;
     //
     this.physicalDevices = [];
     this.lowBattery = false;
@@ -27,28 +44,45 @@ class MyQHost extends HostBase {
     this.connect();
   }
 
+  //
+  // Get updated current device (this.device)
+  //
+  async getDevice() {
+    await this.account.refreshDevices();
+    try {
+      for (const device of this.account.devices) {
+        if (device.serial_number === this.serial_number) {
+          this.device = device;
+          return;
+        }
+      }
+      console.log(this.name, "getDevice not found", this.serial_number);
+    } catch (e) {
+      console.log(e);
+      console.log(this.account);
+      process.exit(1);
+    }
+  }
   async connect() {
     for (;;) {
       // keep reconnecting on failure
       try {
-        const account = new MyQ();
-        this.account = account;
-        const result = await account.login(
-          process.env.MYQ_EMAIL,
-          process.env.MYQ_PASSWORD
+        const account = new myQApi(
+          logger_debug,
+          logger,
+          MYQ_EMAIL,
+          MYQ_PASSWORD,
         );
-        if (result.code !== "OK") {
-          // login failed
-          console.log(this.name, "login failed", result);
-          continue;
-        }
+        this.account = account;
         for (;;) {
           try {
-            const result = await account.getDevice(this.serialNumber);
-            for (const key of Object.keys(result.device.state)) {
-              const value = result.device.state[key];
-              const s = {};
-              s[key] = result.device.state[key];
+            await this.getDevice();
+            const s = {};
+            for (const key of Object.keys(this.device.state)) {
+              const value = this.device.state[key];
+              if (key === 'door_state' || this.device.state[key] != value) {
+                s[key] = this.device.state[key];
+              }
               switch (key) {
                 case "physical_devices":
                   if (this.physicalDevices.length !== value.length) {
@@ -66,10 +100,12 @@ class MyQHost extends HostBase {
                 case "door_state":
                   if (value === "closed") {
                     if (this.state.door_state === "opening") {
+                      s[key] = "opening";
                       continue;
                     }
                   } else if (value === "open") {
                     if (this.state.door_state === "closing") {
+                      s[key] = "closing";
                       continue;
                     }
                   }
@@ -77,15 +113,15 @@ class MyQHost extends HostBase {
                 default:
                   break;
               }
-              this.state = s;
             }
+            this.state = s;
           } catch (e) {
             console.log(this.name, "exception", e);
           }
           await this.wait(POLL_TIME);
         }
       } catch (e) {
-        this.wait(POLL_TIME);
+        await this.wait(POLL_TIME);
         continue;
       }
     }
@@ -96,25 +132,11 @@ class MyQHost extends HostBase {
       switch (topic) {
         case "door":
           if (message.toUpperCase() === "OPEN") {
-            const result = await this.account.setDoorState(
-              this.serialNumber,
-              MyQ.actions.door.OPEN
-            );
-            if (result.code !== "OK") {
-              console.log(this.name, "OPEN FAIL result ", result);
-            } else {
-              this.state = { door_state: "opening" };
-            }
+            await this.account.execute(this.device, "Open");
+            this.state = { door_state: "opening" };
           } else if (message.toUpperCase() === "CLOSE") {
-            const result = await this.account.setDoorState(
-              this.serialNumber,
-              MyQ.actions.door.CLOSE
-            );
-            if (result.code !== "OK") {
-              console.log(this.name, "CLOSE FAIL result ", result);
-            } else {
-              this.state = { door_state: "closing" };
-            }
+            await this.account.execute(this.device, "Close");
+            this.state = { door_state: "closing" };
           }
           break;
         default:
@@ -130,21 +152,25 @@ class MyQHost extends HostBase {
 const main = async () => {
   const hosts = {};
   for (;;) {
-    const account = new MyQ();
-    const result = await account.login(
-      process.env.MYQ_EMAIL,
-      process.env.MYQ_PASSWORD
+    const account = new myQApi(
+      logger_debug,
+      logger,
+      MYQ_EMAIL,
+      MYQ_PASSWORD,
     );
-    if (result.code !== "OK") {
-      continue;
-    }
+
+    //    const account = new MyQ();
+    //    const result = await account.login(
+    //      process.env.MYQ_EMAIL,
+    //      process.env.MYQ_PASSWORD
+    //    );
+    //    if (result.code !== "OK") {
+    //      continue;
+    //    }
     // console.log("result", result);
-    const devices = await account.getDevices();
-    if (devices.code !== "OK") {
-      continue;
-    }
+    await account.refreshDevices();
     // console.log("devices", devices);
-    for (const device of devices.devices) {
+    for (const device of account.devices) {
       hosts[device.name] = new MyQHost(device);
     }
     break;
